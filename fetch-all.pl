@@ -23,7 +23,7 @@ my @systems = qw(
   gba
   genesis
   sms
-  mame
+  fds
 
 );
 
