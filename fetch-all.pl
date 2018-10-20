@@ -11,9 +11,7 @@ use HTML::Entities qw( decode_entities );
 
 my $ua = LWP::UserAgent->new;
 
-# coleco ?
-
-my @systems = qw(
+my @systems = sort qw(
 
   nes
   atari5200
@@ -24,6 +22,7 @@ my @systems = qw(
   genesis
   sms
   fds
+  n64
 
 );
 
