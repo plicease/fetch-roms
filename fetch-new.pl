@@ -8,6 +8,7 @@ use LWP::UserAgent;
 use Mojo::DOM58;
 use Path::Tiny ();
 use Digest::SHA1;
+use Storable ();
 
 Fetch->instance->fetch;
 
@@ -30,7 +31,7 @@ sub _build_systems ($self) {
     return [@ARGV] if @ARGV;
     my $url = "https://edgeemu.net/";
     say "GET SYSTEM INDEX $url";
-    my $res = $self->ua->get($url);
+    my $res = $self->get($url);
     my $dom = Mojo::DOM58->new($res->decoded_content);
     my %systems;
     foreach my $a ($dom->find('option')->each) {
@@ -41,6 +42,15 @@ sub _build_systems ($self) {
     }
     return [shuffle keys %systems];
 
+}
+
+sub get ($self, $url) {
+    if(my $cached = DB->instance->fetch_http_response($url)) {
+        return $cached;
+    }
+    my $res = $self->ua->get($url);
+    DB->instance->store_http_response($url, $res);
+    return $res;
 }
 
 sub fetch ($self) {
@@ -58,7 +68,7 @@ sub fetch ($self) {
 sub fetch_index ($self, $system, $letter) {
     my $url = URI->new("https://edgeemu.net/browse/$system/$letter");
     say "GET LETTER INDEX $url";
-    my $res = $self->ua->get($url);
+    my $res = $self->get($url);
 
     unless($res->is_success) {
         warn $res->status_line;
@@ -102,7 +112,7 @@ sub fetch ($self) {
         return;
     }
     
-    my $res = Fetch->instance->ua->get($self->url);
+    my $res = Fetch->instance->get($self->url);
 
     unless($res->is_success) {
         warn $res->status_line;
@@ -184,6 +194,7 @@ sub _build_dbh {
 }
 
 sub BUILD ($self, $) {
+
     $self->dbh->do(q{
         CREATE TABLE IF NOT EXISTS file (
             id INTEGER PRIMARY KEY,
@@ -191,6 +202,15 @@ sub BUILD ($self, $) {
             path TEXT NOT NULL UNIQUE,
             sha1 TEXT,
             size INTEGER
+        )
+    });
+
+    $self->dbh->do(q{
+        CREATE TABLE IF NOT EXISTS cache (
+            id INTEGER PRIMARY KEY,
+            url TEXT NOT NULL UNIQUE,
+            res BLOB NOT NULL,
+            ts INTEGER NOT NULL
         )
     });
 }
@@ -209,5 +229,42 @@ sub save_details ($self, $file) {
     $self->dbh->do(q{
         INSERT INTO file (url, path, sha1, size) VALUES (?,?,?,?)
     }, {}, $file->url, $file->path, $file->sha1, $file->size );
+    return;
+}
+
+sub fetch_http_response ($self, $url) {
+
+    my $sth = $self->dbh->prepare(q{
+        SELECT res FROM cache WHERE url = ?
+    });
+
+    $sth->execute($url);
+    my($frozen) = $sth->fetchrow_array;
+
+    return undef unless defined $frozen;
+
+    my $res = Storable::thaw($frozen);
+
+    return $res;
+}
+
+sub store_http_response ($self, $url, $res) {
+    return unless $res->is_success;
+
+    my($ct) = $res->headers->content_type;
+    return unless $ct eq 'text/html';
+
+    my $frozen = Storable::freeze($res);
+
+    my $sth = $self->dbh->prepare(q{
+        INSERT INTO cache (url, res, ts) VALUES (?,?,?)
+    });
+
+    $sth->bind_param(1, $url);
+    $sth->bind_param(2, $frozen, DBI::SQL_BLOB());
+    $sth->bind_param(3, time);
+
+    $sth->execute;
+
     return;
 }
