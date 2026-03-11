@@ -2,81 +2,111 @@
 
 use strict;
 use warnings;
-use 5.014;
 use Path::Tiny qw( path );
 use LWP::UserAgent;
 use Mojo::DOM58;
 use URI;
 use HTML::Entities qw( decode_entities );
+use Archive::Libarchive;
+use Archive::Libarchive::Peek;
+use List::Util qw( shuffle );
+use feature qw( say signatures );
 
 my $ua = LWP::UserAgent->new;
 
-my @systems = sort qw(
+my @systems;
 
-  nes
-  atari5200
-  snes
-  gb
-  gbc
-  gba
-  genesis
-  sms
-  fds
-  n64
+if(@ARGV) {
+  @systems = @ARGV;
+} else {
+  @systems = get_systems();
+}
 
-);
-
-my @letters = qw( num A B C D E F G H I J K L M N O P Q R S T U V W X Y Z );
+my @letters = qw( 1 a b c de f g h i j k l m n o p q r s t u v w x y z );
 
 my $base = URI->new("https://edgeemu.net");
 
 foreach my $system (@systems)
 {
-  foreach my $letter (@letters)
+  foreach my $letter (shuffle @letters)
   {
     my $index_uri = $base->clone;
-    $index_uri->path("/browse-$system-$letter.htm");
+    $index_uri->path(sprintf "/browse/%s/%s", $system, $letter );
     say "GET LETTER INDEX $index_uri";
     my $index_res = $ua->get($index_uri);
     if($index_res->is_success)
     {
       my $dom = Mojo::DOM58->new($index_res->decoded_content);
-      foreach my $e ($dom->find('#content table.roms tr td a')->each)
+      x: foreach my $e (shuffle $dom->find('details a')->each)
       {
-        my $game_index_url  = URI->new_abs($e->attr('href'), $index_res->base);
+        my $game_url  = URI->new_abs($e->attr('href'), $index_res->base);
+        $DB::single = 1;
         my $name = $e->content;
 
-        my $guess_name = path("roms/$system/@{[ decode_entities $name ]}.zip");
-        next if -e $guess_name;
+        my $guess_base = path("new/$system/@{[ decode_entities $name ]}");
+        foreach my $ext (qw( .zip .chd .rvz )) {
+          my $guess = $guess_base->sibling($guess_base->basename . $ext);
+          next x if -f $guess;
+        }
         
-        say "GET GAME   INDEX $game_index_url ($name)";
-        my $game_index_res = $ua->get($game_index_url);
-        if($game_index_res->is_success)
+        say "GET GAME   DL    $game_url ($name)";
+        my $game_res = $ua->get($game_url);
+        if($game_res->is_success)
         {
-          my $dom = Mojo::DOM58->new($game_index_res->decoded_content);
-          my $count = 0;
-          foreach my $e ($dom->find('#content table a')->each)
-          {
-            my $download_url = URI->new_abs($e->attr('href'), $game_index_res->base);
-            my $name = $e->content;
-            next if $name =~ /www\.adobe\.com/;
-            say "GET GAME   DL    $download_url ($name)";
-
-            my $download_res = $ua->get($download_url);
-            my $filename = $download_res->filename;
-            my $path = path("roms/$system/$filename");
-            next if -e $path;
-            $path->parent->mkpath;
-            $path->spew_raw($download_res->decoded_content);
-            $count++;
-            last;
+          $guess_base->parent->mkpath;
+          if($game_res->filename =~ /(\.(?:chd|rvz))$/) {
+            my $name = $guess_base->sibling( $guess_base->basename . $1 );
+            $name->spew_raw($game_res->decoded_content);
+            say "                 $name";
           }
+          else
+          {
+            local $@;
+            eval {
+              my $name = $guess_base->sibling( $guess_base->basename . ".zip" );
+              my $w = Archive::Libarchive::ArchiveWrite->new;
+              $w->set_format_zip;
+              $w->open_filename("$name");
+              Archive::Libarchive::Peek->new( memory => \$game_res->decoded_content )->iterate(sub ($filename, $content, $e) {
+                say "                 $name/$filename";
+                $w->write_header($e);
+                $w->write_data(\$content);
+              });
+              $w->close;
+            };
+            if(my $error = $@) {
+              warn "error extracting archive: $error";
+              warn $game_res->filename;
+              die;
+            }
+          }
+        }
+        else {
+          warn $game_res->status_line;
         }
       }
     }
     else
     {
-      die $index_res->status_line
+      warn $index_res->status_line
     }
   }
+}
+
+
+sub get_systems
+{
+  my $url = "https://edgeemu.net/";
+  say "GET SYSTEM INDEX $url";
+  my $res = $ua->get($url);
+  my $dom = Mojo::DOM58->new($res->decoded_content);
+  my %systems;
+  foreach my $a ($dom->find('option')->each)
+  {
+    my $id = $a->attr('value');
+    next unless defined $id;
+    next if $id eq 'all';
+    $systems{$id}++;
+  }
+  return shuffle keys %systems;
 }

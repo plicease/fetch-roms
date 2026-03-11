@@ -1,0 +1,9 @@
+requires 'URI';
+requires 'LWP::UserAgent';
+requires 'Mojo::DOM58';
+requires 'Path::Tiny';
+requires 'Class::Tiny';
+requires 'List::Util';
+requires 'DBI';
+requires 'DBD::SQLite';
+requires 'Digest::SHA1';
