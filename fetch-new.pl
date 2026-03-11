@@ -1,6 +1,7 @@
 #!/usr/bin/env perl
 
 use 5.040;
+use strict;
 use warnings;
 use URI;
 use LWP::UserAgent;
@@ -8,7 +9,7 @@ use Mojo::DOM58;
 use Path::Tiny ();
 use Digest::SHA1;
 
-Fetch->new->fetch;
+Fetch->instance->fetch;
 
 package Fetch;
 
@@ -18,6 +19,11 @@ use Class::Tiny {
     systems => \&_build_systems,
     ua => sub { LWP::UserAgent->new },
 };
+
+sub instance {
+    state $self;
+    $self //= __PACKAGE__->new;
+}
 
 sub _build_systems ($self) {
     my @systems;
@@ -77,7 +83,6 @@ sub fetch_index ($self, $system, $letter) {
 package File;
 
 use Class::Tiny {
-    ua     => sub { die "ua is required"     },
     url    => sub { die "url is required"    },
     system => sub { die "system is required" },
     db     => sub { DB->instance },
@@ -97,7 +102,7 @@ sub fetch ($self) {
         return;
     }
     
-    my $res = $self->ua->get($self->url);
+    my $res = Fetch->instance->ua->get($self->url);
 
     unless($res->is_success) {
         warn $res->status_line;
