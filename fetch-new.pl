@@ -213,6 +213,11 @@ sub BUILD ($self, $) {
             ts INTEGER NOT NULL
         )
     });
+
+    # delet everything older than four hours
+    $self->dbh->do(q{
+        DELETE FROM cache WHERE ts < ?
+    }, {}, time-14400);
 }
 
 sub already_downloaded ($self, $file) {
