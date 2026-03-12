@@ -7,3 +7,5 @@ requires 'List::Util';
 requires 'DBI';
 requires 'DBD::SQLite';
 requires 'Digest::SHA1';
+requires 'Storable';
+requires 'Getopt::Long::Descriptive';
