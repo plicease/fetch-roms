@@ -9,8 +9,29 @@ use Mojo::DOM58;
 use Path::Tiny ();
 use Digest::SHA1;
 use Storable ();
+use Getopt::Long::Descriptive qw( describe_options );
 
-Fetch->instance->fetch;
+sub main {
+
+    my ( $opt, $usage ) = describe_options(
+        'hch %o <command> [arg=value ...]',
+        [ 'zips',      'Add zip contents to .database file' ],
+        { getopt_conf => [ 'no_auto_abbrev', 'bundling', 'no_auto_abbrev' ] },
+    );
+
+    if($opt->zips) {
+        foreach my $file (DB->instance->get_files('%.zip')->@*) {
+            next if $file->is_unziped;
+            printf "ZIP %s\n", $file->path;
+            $file->extract_archive_sub_files_into_database;
+        }
+    } else {
+        Fetch->instance->fetch;
+    }
+}
+
+main();
+exit;
 
 package Fetch;
 
@@ -95,7 +116,8 @@ package File;
 use Class::Tiny {
     url    => sub { die "url is required"    },
     system => sub { die "system is required" },
-    db     => sub { DB->instance },
+    sha1   => \&_build_sha1,
+    size   => \&_build_size,
     path   => \&_build_path,
 };
 
@@ -111,7 +133,7 @@ sub fetch ($self) {
         warn "do not know how to handle extension";
         return;
     }
-    
+
     my $res = Fetch->instance->get($self->url);
 
     unless($res->is_success) {
@@ -125,7 +147,7 @@ sub fetch ($self) {
 
     $self->path->parent->mkpath;
     $self->path->spew_raw($content);
-    $self->db->save_details($self);
+    DB->instance->save_details($self);
 
     return;
 }
@@ -162,19 +184,60 @@ sub munge ($self, $content) {
 }
 
 sub is_downloaded ($self) {
-    $self->db->already_downloaded($self);
+    DB->instance->already_downloaded($self);
 }
 
-sub size ($self) {
+sub _build_size ($self) {
     die "file does not exist" unless -f $self->path;
     return -s $self->path;
 }
 
-sub sha1 ($self) {
+sub _build_sha1 ($self) {
     die "file does not exist" unless -f $self->path;
     my $sha1 = Digest::SHA1->new;
     $sha1->addfile($self->path->openr_raw);
     return $sha1->hexdigest;
+}
+
+sub is_unziped ($self) {
+    my $count = DB->instance->get_file_by_url($self->url, 2)->@*;
+    if($count == 0) {
+        die "file is not in database!";
+    } elsif($count == 1) {
+        return 0;
+    } else {
+        return 1;
+    }
+}
+
+sub extract_archive_sub_files_into_database ($self) {
+    require Archive::Libarchive::Peek;
+    my $peek = Archive::Libarchive::Peek->new( filename => $self->path );
+
+    my @files;
+
+    $peek->iterate(sub ($filename, $content, $e) {
+
+        my $sha1 = Digest::SHA1->new;
+        $sha1->add($content);
+
+        push @files, File->new(
+            url => $self->url,
+            path => sprintf('%s|%s', $self->path, $filename),
+            system => $self->system,
+            sha1 => $sha1->hexdigest,
+            size => $e->size,
+        );
+
+    });
+
+
+    return unless @files >= 1;
+
+    say "    " . $_->path for @files;
+    DB->instance->save_details(@files);
+
+    return;
 }
 
 package DB;
@@ -230,10 +293,24 @@ sub already_downloaded ($self, $file) {
     return $path && -f $path;
 }
 
-sub save_details ($self, $file) {
-    $self->dbh->do(q{
-        INSERT INTO file (url, path, sha1, size) VALUES (?,?,?,?)
-    }, {}, $file->url, $file->path, $file->sha1, $file->size );
+sub save_details ($self, @files) {
+
+    die "requires at least one file" unless @files;
+
+    my $sql = q{
+        INSERT INTO file (url, path, sha1, size) VALUES
+    };
+
+    my @binds;
+
+    foreach my $file (@files) {
+        $sql .= "(?,?,?,?),";
+        push @binds, $file->url, $file->path, $file->sha1, $file->size;
+    }
+    $sql =~ s/,\z//;
+
+    $self->dbh->do($sql, {}, @binds);
+
     return;
 }
 
@@ -272,4 +349,58 @@ sub store_http_response ($self, $url, $res) {
     $sth->execute;
 
     return;
+}
+
+sub get_files ($self, $pattern=undef) {
+    $pattern //= '%';
+
+    my $sth = $self->dbh->prepare(q{
+        SELECT url, path FROM file WHERE path LIKE ? ORDER BY path
+    });
+
+    $sth->execute($pattern);
+    $sth->bind_columns(\my $url, \my $path);
+
+    my @list;
+
+    while($sth->fetch) {
+        my $system = Path::Tiny->new($path)->parent->basename;
+        push @list, File->new(
+            url => $url,
+            path => $path,
+            system => $system,
+        );
+    }
+
+    return \@list;
+}
+
+sub get_file_by_url ($self, $url, $limit=undef) {
+
+    my $sql = q{
+        SELECT path FROM file WHERE url = ? ORDER BY path
+    };
+
+    $sql .= "LIMIT ?" if defined $limit;
+
+    my $sth = $self->dbh->prepare($sql);
+
+    my @binds = ($url);
+    push @binds, $limit if defined $limit;
+
+    $sth->execute(@binds);
+    $sth->bind_columns(\my $path);
+
+    my @list;
+
+    while($sth->fetch) {
+        my $system = Path::Tiny->new($path)->parent->basename;
+        push @list, File->new(
+            url => $url,
+            path => $path,
+            system => $system,
+        );
+    }
+
+    return \@list;
 }
